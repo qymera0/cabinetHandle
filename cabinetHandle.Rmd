@@ -1,0 +1,81 @@
+---
+title: "Cabinet handle removal"
+subtitle: 'Sound power comparison'
+author: "Mirella L Thomazini, Andreyson Jambersi, Thiago Galavotti, Samuel B Baco"
+output:
+  pdf_document:
+    includes:
+      in_header: latex/headFooter.tex
+      before_body: latex/before_body.tex
+  html_notebook: default
+  html_document:
+    df_print: paged
+bibliography: references.bib
+---
+
+```{=html}
+<style>
+body {text-align: justify}
+</style>
+```
+\newpage
+
+\thispagestyle{plain}
+
+\tableofcontents
+
+\newpage
+
+\thispagestyle{plain}
+
+# INTRODUCTION
+
+\newpage
+
+\thispagestyle{plain}
+
+# 1 DATA AND PACKAGE LOADING
+
+## 1.1 Package loading
+
+```{r PACKAGELOADING}
+
+library(tidyverse)
+library(knitr)
+library(VCA)
+library(lme4)
+library(brms)
+library(bayesplot)
+library(tidybayes)
+
+```
+
+```{r KNITROPTIONS}
+
+opts_chunk$set(message = F, warning = F, dpi = 300, dev = "ragg_png")
+
+options(scipen = 999)
+
+```
+
+# 2 DATA LOADING
+
+
+
+\newpage
+
+\thispagestyle{plain}
+
+# SESSION INFO
+
+```{r SESSIONINFO}
+
+sessionInfo()
+
+```
+
+\newpage
+
+\thispagestyle{plain}
+
+# BIBLIOGRAPHY

@@ -1,0 +1,23 @@
+% Add figure to the first page
+\usepackage{titling}
+
+\pretitle{\begin{center}
+
+\includegraphics[width=2in,height=2in]{latex/wlogo.png}\LARGE\\}
+
+\posttitle{\end{center}}
+
+% Configure header and footer
+\usepackage{fancyhdr}
+
+\pagestyle{fancy}
+
+% center of header
+\fancyhead[CO,CE]{}
+
+% center of footer
+\fancyfoot[CO,CE]{\includegraphics[width=2cm]{latex/wlogo.png}}
+
+% page number on the left of even pages and right of odd pages
+\fancyfoot[LE,RO]{\thepage}
+
