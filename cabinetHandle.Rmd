@@ -38,15 +38,22 @@ body {text-align: justify}
 
 ## 1.1 Package loading
 
-```{r PACKAGELOADING}
+```{r PACKAGELOADING, message=F, warning=F}
 
 library(tidyverse)
 library(knitr)
+library(factoextra)
 library(VCA)
 library(lme4)
+library(car)
 library(brms)
 library(bayesplot)
 library(tidybayes)
+
+# Auxiliar functions
+
+source("~/R/cabinetHandle/functions/brms_mdl_check.R")
+source("~/R/cabinetHandle/functions/brms_pred_post.R")
 
 ```
 
@@ -58,8 +65,344 @@ options(scipen = 999)
 
 ```
 
-# 2 DATA LOADING
+# 2 DATA LOADING AND WRANGLE
 
+```{r DATALOADING, message=F, warning=F}
+
+df <-
+  read_csv("dataSets/data.csv", 
+           locale = locale(decimal_mark = ",")
+  ) %>% 
+  select(
+    c("Product Model", "Cabinet Condition", "Sample"), 15:20
+  ) %>% 
+  rename(
+    'prod' = "Product Model",
+    'handle' = "Cabinet Condition",
+    'sample' = 'Sample',
+    'soundP' = "Y1 = Sound Power [dB]",
+    'wuVib1' = "WU vibration 1",
+    'wuVib2' = "WU vibration 2",
+    'wuVib3' = "WU vibration 3",
+    'cabVib' = "Cabinet Vibration",
+    'rpm' = "Y3 = RPM"
+  ) %>% 
+  mutate(
+    prod = case_when(
+      prod == 1 ~ -1,
+      T ~ 1
+    ),
+    handle = case_when(
+      handle == '-' ~ '-1',
+      T ~ '1'
+    ),
+    handle = as.numeric(handle),
+    sample = as.factor(sample)
+  )
+
+```
+
+
+# 3 PRINCIPAL COMPONENT ANALYSIS
+
+## 3.1 Calculation
+
+```{r PCA, message=F, warning=F}
+
+pca <-
+  princomp(
+    df %>% 
+      select(wuVib1, wuVib2, wuVib3, cabVib, rpm),
+    cor = T,
+    scores = T
+  )
+
+print(pca)
+
+dfFinal <-
+  df %>% 
+  mutate(
+    p1 = pca$scores[ ,'Comp.1'],
+    p2 = pca$scores[ ,'Comp.1']
+  )
+
+```
+
+## 3.2 Graphical evaluation
+
+```{r PCAGRAPH, message=F, warning=F}
+
+# Scree plot
+
+fviz_eig(pca) +
+    labs(
+    title = 'Scree plot'
+  ) +
+  theme_classic() +
+  theme(
+    axis.line = element_blank(),
+    plot.title = element_text(face = 'bold')
+      
+  )
+
+# Loading plot
+
+fviz_pca_var(pca, repel = T) +
+  labs(
+    title = 'PCA loadings',
+    subtitle = 'Product sound power | covariates'
+  ) +
+  theme_classic() +
+  theme(
+    axis.line = element_blank(),
+    plot.title = element_text(face = 'bold')
+      
+  )
+
+```
+# 4 FREQUENTIST ANALYSIS
+
+## 4.1 Graphical analysis
+
+```{r VARIABILITY}
+
+varPlot(
+        soundP ~ prod + handle + sample,
+        Data = as.data.frame(dfFinal),
+        htab = 0.8,
+        Title = list(
+                main = 'Cabinet handle removal | Sound power',
+                adj = 0
+        ),
+        YLabel = list(
+                text = ''
+        ),
+        MeanLine = list(
+                var = c('prod', 'handle', 'sample'),
+                col = c('blue', 'red', 'green')
+        )
+)
+
+```
+
+## 4.2 Mixed model
+
+```{r FREQMIXMODEL}
+
+dfCat <-
+  dfFinal %>% 
+  mutate(
+    prod = case_when(
+      prod == -1 ~ 0,
+      T ~ 1
+    ),
+    handle = case_when(
+      handle == -1 ~ 0,
+      T ~ 1
+    ),
+    prod = as.character(prod),
+    handle = as.character(handle)
+  )
+
+mixModFull <-
+  lmer(
+    soundP ~ p2 + prod + handle + (1 | sample),
+    data = dfCat,
+    control = lmerControl(optimizer = "Nelder_Mead")
+  )
+
+summary(mixModFull, correlation = F)
+
+```
+
+# 4.2 Bayesian analysis
+
+## 4.2.1 Stanvars
+
+```{r GAMMA}
+
+# Allow shape = sd(y) / 2 and rate = 2 * sd(y)
+
+gamma_a_b_from_omega_sigma <- function(mode, sd) {
+        
+        if (mode <= 0) stop("mode must be > 0")
+        
+        if (sd   <= 0) stop("sd must be > 0")
+        
+        rate <- (mode + sqrt(mode^2 + 4 * sd^2)) / (2 * sd^2)
+        
+        shape <- 1 + mode * rate
+        
+        return(list(shape = shape, rate = rate))
+}
+
+```
+
+
+```{r STANVARS}
+
+# Stanvar parameters
+
+yMean <- mean(dfFinal$soundP)
+
+ySd <- sd(dfFinal$soundP)
+
+yOmega <- ySd / 2
+
+ySigma <- 2 * ySd
+
+sr <- 
+        gamma_a_b_from_omega_sigma(
+                mode = yOmega, 
+                sd = ySigma
+        )
+
+# Stanvars definition
+
+stanVars <-
+        stanvar(yMean, name = 'mean_y') + 
+        stanvar(ySd, name = 'sd_y') + 
+        stanvar(sr$shape, name = 'alpha') + 
+        stanvar(sr$rate, name = 'beta') + 
+        stanvar(1/29, name = 'one_over_twentynine')
+
+```
+
+## 4.2.2 Linear fit
+
+```{r BAYESMODEL}
+
+bayesMdl <-
+        brm(
+                data = dfCat,
+                family = student,
+                soundP ~ p2 + prod + handle + (1 | sample),
+                prior = c(
+                        # Prior to intercept (Beta 0)
+                        prior(normal(mean_y, sd_y*10), 
+                              class = Intercept),
+                        # Prior for numerical var coef
+                        prior(normal(mean_y, sd_y*10), class = b),
+                        # Prior for categorical var coef
+                        prior(gamma(alpha, beta), class = sd),
+                        # Prior for residual variance (student distribution)
+                        prior(normal(0, sd_y), class = sigma),
+                        # Prior for student distribution df parameter
+                        prior(exponential(one_over_twentynine), 
+                              class = nu)
+                ),
+                stanvars = stanVars,
+                iter = 200000,
+                warmup = 4000,
+                chains = 4,
+                cores = 4,
+                seed = 123456,
+                #control = list(adapt_delta = .99),
+                thin = 100,
+                backend = "cmdstanr", 
+                threads = threading(2)
+        )
+
+summary(bayesMdl)
+
+```
+# 4.3 Handle contrast 
+
+```{r HANDLECONSTRAST}
+
+# Extract chains
+
+chains <-
+  as_draws_df(bayesMdl)
+
+# Create contrast information
+
+contrastData <-
+  chains %>% 
+  select(b_Intercept, b_handle1) %>%
+  rename(
+    'withoutHandle' = 'b_Intercept'
+  ) %>% 
+  mutate(
+    withHandle = withoutHandle + b_handle1,
+    contrast = withoutHandle - withHandle
+  )
+
+# Plot contrast
+
+contrastData %>% 
+  ggplot(aes(x = contrast)) + 
+  geom_histogram() +
+  geom_vline(xintercept = 0) + 
+  labs(
+    title = 'Soundpower contrast',
+    subtitle = 'Contrast = without handle - with handle',
+    x = 'Contrast',
+    y = ''
+  ) +
+  theme_classic() +
+  theme(
+    axis.line = element_blank(),
+    plot.title = element_text(face = 'bold')
+      
+  )
+
+# 95% High density interval
+
+contrastData %>% 
+        median_qi(contrast, .width = 0.95) %>%
+        select(contrast, .lower, .upper) %>%
+        rename('Median' = 'contrast',
+               'Lower 50HDI' = '.lower',
+               'Upper 50HDI' = '.upper') %>% 
+
+        kable(
+                caption = 'Soundpower contrast wihtout handle',
+                format.args
+                = list(
+                        scientific = F,
+                        digits = 2
+                )
+                
+        )
+
+# Plot 95% HDI Intervals for contrast
+
+mcmc_intervals(
+        contrastData, 
+        pars = c('contrast')
+) +
+        labs(
+                title = 'Soundpower contrast',
+                subtitle = 'Contrast = Without handle - with handle'
+        ) +
+        theme(
+                title = element_text(face = 'bold'),
+                plot.subtitle = element_text(face = 'plain')
+        )
+
+
+```
+
+# APPENDIX
+
+## A.1 Bayes model check
+
+### Chains convergence
+
+```{r CHAINSCONVERGENCE}
+
+brms_mdl_check(bayesMdl, nvar = 7, ncol = 3)
+
+```
+
+### Posterior predictive
+
+```{r POSTPRED}
+
+brms_pred_post(dfCat$soundP,bayesMdl, ndens = 128)
+
+```
 
 
 \newpage
