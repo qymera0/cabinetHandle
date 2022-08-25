@@ -45,7 +45,11 @@ library(knitr)
 library(factoextra)
 library(VCA)
 library(lme4)
-library(car)
+library(lmerTest)
+library(emmeans)
+library(ggResidpanel)
+library(sjPlot)
+library(sjmisc)
 library(brms)
 library(bayesplot)
 library(tidybayes)
@@ -102,28 +106,32 @@ df <-
 
 ```
 
-
 # 3 PRINCIPAL COMPONENT ANALYSIS
 
 ## 3.1 Calculation
 
 ```{r PCA, message=F, warning=F}
 
+# Method prcomp gives same results as Minitab. Scores has inverse signal.
+
 pca <-
-  princomp(
+  prcomp(
     df %>% 
-      select(wuVib1, wuVib2, wuVib3, cabVib, rpm),
-    cor = T,
-    scores = T
+      select(wuVib1, wuVib2, wuVib3, cabVib, rpm) %>% 
+      scale(),
+    center = F,
+    scale = F
   )
 
 print(pca)
 
+get_eigenvalue(pca)
+
 dfFinal <-
   df %>% 
   mutate(
-    p1 = pca$scores[ ,'Comp.1'],
-    p2 = pca$scores[ ,'Comp.1']
+    p1 = -pca$x[ ,'PC1'],
+    p2 = -pca$x[ ,'PC2']
   )
 
 ```
@@ -160,6 +168,7 @@ fviz_pca_var(pca, repel = T) +
   )
 
 ```
+
 # 4 FREQUENTIST ANALYSIS
 
 ## 4.1 Graphical analysis
@@ -187,31 +196,156 @@ varPlot(
 
 ## 4.2 Mixed model
 
-```{r FREQMIXMODEL}
+### 4.2.1 Full model fit
+
+```{r FREQFULLMODEL}
 
 dfCat <-
   dfFinal %>% 
   mutate(
-    prod = case_when(
-      prod == -1 ~ 0,
-      T ~ 1
-    ),
-    handle = case_when(
-      handle == -1 ~ 0,
-      T ~ 1
-    ),
-    prod = as.character(prod),
-    handle = as.character(handle)
+    prod = as_factor(prod),
+    handle = as_factor(handle)
   )
 
 mixModFull <-
   lmer(
-    soundP ~ p2 + prod + handle + (1 | sample),
-    data = dfCat,
-    control = lmerControl(optimizer = "Nelder_Mead")
-  )
+    soundP ~ p1 + p2 + prod*handle + (1 | sample),
+    data = dfCat
+)
 
 summary(mixModFull, correlation = F)
+
+```
+
+### 4.2.2 Anova
+
+```{r ANOVA}
+
+# Fixed effects (results similar to Minitab)
+
+anova(
+  mixModFull,
+  type = c('III'),
+  ddf = "Kenward-Roger"
+)
+
+```
+
+### 4.2.3 Reduced model
+
+```{r FREQREDMODEL}
+
+mixModRed <-
+  lmer(
+    soundP ~ p2 + prod + handle + (1 | sample),
+    data = dfCat
+)
+
+summary(mixModRed, correlation = F)
+
+```
+
+### 4.2.4 Graphical evaluation
+
+```{r FREQMDLGRAPH}
+
+# Effects 
+
+plot_model(
+  mixModRed,
+  axis.labels = c("Handle", "Product", "PC2"),
+  show.values = TRUE, 
+  show.p = TRUE,
+) +
+  labs(
+    title = 'Sound power effects',
+    caption = 'Estimates are two times when compared with Minitab'
+  ) +
+  theme_classic() +
+  theme(
+    #axis.line = element_blank(),
+    plot.title = element_text(face = 'bold')
+      
+  )
+
+# Marginal effects
+
+## PC2
+
+plot_model(
+  mixModRed,
+  type = 'pred',
+  terms = c('p2')
+) +
+  labs(
+    title = 'PC2 effect',
+    subtitle = 'Sound poer [dBA]',
+    x = 'Second principal component',
+    y = ''
+  ) +
+  theme_classic() +
+  theme(
+    #axis.line = element_blank(),
+    plot.title = element_text(face = 'bold')
+      
+  )
+
+## Handle
+
+plot_model(
+  mixModRed,
+  type = 'pred',
+  terms = c('handle')
+) +
+  labs(
+    title = 'Cabinet handle effect',
+    subtitle = 'Sound poer [dBA]',
+    x = 'Handle presence',
+    y = ''
+  ) +
+  theme_classic() +
+  theme(
+    #axis.line = element_blank(),
+    plot.title = element_text(face = 'bold')
+      
+  )
+
+## Product
+
+plot_model(
+  mixModRed,
+  type = 'pred',
+  terms = c('p2')
+) +
+  labs(
+    title = 'Product effect',
+    subtitle = 'Sound poer [dBA]',
+    x = 'Product configuration',
+    y = ''
+  ) +
+  theme_classic() +
+  theme(
+    #axis.line = element_blank(),
+    plot.title = element_text(face = 'bold')
+      
+  )
+
+# Residuals
+
+resid_panel(mixModRed, plots = 'all')
+
+
+```
+
+### 4.2.5 Contrast
+
+```{r CONTRASTS}
+
+freqEmeans <- emmeans(mixModRed, 'handle')
+
+freqEmeans
+
+confint(pairs(freqEmeans))
 
 ```
 
@@ -237,7 +371,6 @@ gamma_a_b_from_omega_sigma <- function(mode, sd) {
 }
 
 ```
-
 
 ```{r STANVARS}
 
@@ -301,12 +434,14 @@ bayesMdl <-
                 thin = 100,
                 backend = "cmdstanr", 
                 threads = threading(2)
+                #opencl = opencl(c(0,0))
         )
 
 summary(bayesMdl)
 
 ```
-# 4.3 Handle contrast 
+
+## 4.3 Handle contrast
 
 ```{r HANDLECONSTRAST}
 
@@ -400,10 +535,9 @@ brms_mdl_check(bayesMdl, nvar = 7, ncol = 3)
 
 ```{r POSTPRED}
 
-brms_pred_post(dfCat$soundP,bayesMdl, ndens = 128)
+brms_pred_post(dfCat$soundP,bayesMdl, ndens = 256, lim = c(65,80))
 
 ```
-
 
 \newpage
 
